@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Collaborative Labour Management</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for better look and feel */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fb;
+        }
+        .container {
+            max-width: 1200px;
+        }
+        .form-card {
+            background-color: #ffffff;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+        }
+        .table-container {
+            overflow-x: auto;
+            max-height: 70vh;
+        }
+        th {
+            position: sticky;
+            top: 0;
+            background-color: #e0f2f1; /* Light Blue/Teal for header */
+            z-index: 10;
+        }
+        .attendance-header th {
+            background-color: #ffeccb; /* Light Orange for Attendance header */
+        }
+        .payments-header th {
+            background-color: #c7e8c4; /* Light Green for Payments header */
+        }
+    </style>
+    <!-- Load Firebase Modules -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, 
+            onAuthStateChanged 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            collection, 
+            addDoc, 
+            query, 
+            onSnapshot, 
+            serverTimestamp,
+            setLogLevel 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        setLogLevel('Debug');
+
+        let db, auth;
+        let userId = '';
+        
+        // Firestore Collection References
+        let registerCollection, attendanceCollection, paymentsCollection;
+        
+        // Global map to store worker data for lookups (Worker ID -> Worker Data)
+        let workersMap = {}; 
+        let workersList = []; // Array of workers for dropdowns
+
+        const firebaseConfig = typeof __firebase_config !== 'undefined' 
+            ? JSON.parse(__firebase_config) 
+            : null;
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // UI Elements
+        const authStatusElement = document.getElementById('auth-status');
+        const errorAlert = document.getElementById('error-alert');
+        const successAlert = document.getElementById('success-alert');
+        const contentViews = {
+            register: document.getElementById('register-view'),
+            attendance: document.getElementById('attendance-view'),
+            payments: document.getElementById('payments-view')
+        };
+        const registerForm = document.getElementById('register-form');
+        const workerListBody = document.getElementById('worker-list-body');
+        const attendanceForm = document.getElementById('attendance-form');
+        const attendanceListBody = document.getElementById('attendance-list-body');
+        const paymentsForm = document.getElementById('payments-form');
+        const paymentsListBody = document.getElementById('payments-list-body');
+        const workerSelects = document.querySelectorAll('.worker-select');
+
+
+        // --- Utility Functions ---
+
+        // Function to switch visible content view
+        window.switchView = function(viewName) {
+            Object.keys(contentViews).forEach(key => {
+                contentViews[key].classList.add('hidden');
+                document.getElementById(`tab-${key}`).classList.remove('border-teal-500', 'text-teal-600');
+                document.getElementById(`tab-${key}`).classList.add('border-transparent', 'text-gray-500');
+            });
+            contentViews[viewName].classList.remove('hidden');
+            document.getElementById(`tab-${viewName}`).classList.add('border-teal-500', 'text-teal-600');
+            document.getElementById(`tab-${viewName}`).classList.remove('border-transparent', 'text-gray-500');
+        }
+
+        // Utility to show temporary messages
+        function showAlert(element, message, duration = 3000) {
+            element.textContent = message;
+            element.classList.remove('hidden');
+            element.classList.add('flex');
+            setTimeout(() => {
+                element.classList.add('hidden');
+                element.classList.remove('flex');
+            }, duration);
+        }
+        
+        // Populate worker dropdowns
+        function populateWorkerSelects() {
+            workerSelects.forEach(select => {
+                const selectedValue = select.value;
+                select.innerHTML = '<option value="" disabled selected>Select Worker</option>';
+                workersList.forEach(worker => {
+                    const option = document.createElement('option');
+                    // We use the worker's document ID as the Worker No. reference for Firestore
+                    option.value = worker.id;
+                    option.textContent = `${worker.data.workerFullName} (${worker.data.tradeRole})`;
+                    if (worker.id === selectedValue) {
+                        option.selected = true;
+                    }
+                    select.appendChild(option);
+                });
+            });
+        }
+
+        // --- Firebase Initialization ---
+
+        async function initFirebase() {
+            try {
+                if (!firebaseConfig) {
+                    throw new Error("Firebase configuration not available.");
+                }
+
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                // 1. Authentication
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        authStatusElement.innerHTML = `Connected as User ID: <span class="font-mono text-xs p-1 bg-green-100 rounded">${userId}</span>`;
+                        
+                        // Define public collection paths
+                        const base = `/artifacts/${appId}/public/data`;
+                        registerCollection = collection(db, `${base}/labour_register`);
+                        attendanceCollection = collection(db, `${base}/daily_attendance`);
+                        paymentsCollection = collection(db, `${base}/wage_payments`);
+                        
+                        // 2. Start listening to data once authenticated
+                        startRealtimeListeners();
+                        switchView('register'); // Default view
+                    } else {
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    }
+                });
+
+            } catch (error) {
+                console.error("Firebase Initialization/Authentication Error:", error);
+                authStatusElement.textContent = `Error: ${error.message}`;
+            }
+        }
+
+        // --- Realtime Data Listeners (onSnapshot) ---
+
+        function startRealtimeListeners() {
+            // Listener 1: Labour Register (Worker Map Builder)
+            onSnapshot(query(registerCollection), (snapshot) => {
+                workerListBody.innerHTML = '';
+                workersMap = {};
+                workersList = [];
+                let workerIndex = 1;
+                
+                snapshot.forEach((doc) => {
+                    const worker = doc.data();
+                    const workerId = doc.id;
+                    
+                    // Populate worker lookup map
+                    workersMap[workerId] = worker;
+                    workersList.push({ id: workerId, data: worker });
+                    
+                    const row = document.createElement('tr');
+                    row.className = 'border-b hover:bg-gray-50';
+                    
+                    const startDate = worker.startDate ? new Date(worker.startDate).toLocaleDateString() : 'N/A';
+
+                    row.innerHTML = `
+                        <td class="p-4 text-center">${workerIndex++}</td>
+                        <td class="p-4 font-semibold text-teal-700">${worker.workerFullName || ''}</td>
+                        <td class="p-4 text-sm">${workerId.substring(0, 5)}...</td> <!-- Worker No. is the Document ID -->
+                        <td class="p-4">${worker.nationalId || ''}</td>
+                        <td class="p-4">${worker.homeLocation || ''}</td>
+                        <td class="p-4">${worker.contactPhone || ''}</td>
+                        <td class="p-4 text-center">${worker.skillLevel || ''}</td>
+                        <td class="p-4 text-center">${worker.sex || ''}</td>
+                        <td class="p-4">${worker.tradeRole || ''}</td>
+                        <td class="p-4">${startDate}</td>
+                        <td class="p-4 text-sm text-gray-500">${worker.remarks || ''}</td>
+                        <td class="p-4 text-center">...</td>
+                    `;
+                    workerListBody.appendChild(row);
+                });
+                
+                populateWorkerSelects();
+            }, (error) => {
+                console.error("Firestore Register Snapshot Error:", error);
+                showAlert(errorAlert, `Failed to fetch register data: ${error.message}`);
+            });
+
+            // Listener 2: Daily Attendance
+            onSnapshot(query(attendanceCollection), (snapshot) => {
+                attendanceListBody.innerHTML = '';
+                let recordIndex = 1;
+                snapshot.forEach((doc) => {
+                    const record = doc.data();
+                    const worker = workersMap[record.workerId] || {}; // Lookup worker info
+                    
+                    const row = document.createElement('tr');
+                    row.className = 'border-b hover:bg-gray-50';
+
+                    const statusClass = record.status === 'P' ? 'bg-green-100 text-green-700' : 
+                                        record.status === 'L' ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700';
+
+                    row.innerHTML = `
+                        <td class="p-4 text-center">${recordIndex++}</td>
+                        <td class="p-4">${new Date(record.date).toLocaleDateString()}</td>
+                        <td class="p-4 text-sm">${record.workerId.substring(0, 5)}...</td>
+                        <td class="p-4">${worker.workerFullName || 'N/A'}</td>
+                        <td class="p-4">${record.location || 'N/A'}</td>
+                        <td class="p-4 text-center font-bold ${statusClass}">${record.status || ''}</td>
+                        <td class="p-4 text-center">${record.hoursWorked || 0}</td>
+                        <td class="p-4 text-sm text-gray-500">${record.remarks || ''}</td>
+                    `;
+                    attendanceListBody.appendChild(row);
+                });
+            }, (error) => {
+                console.error("Firestore Attendance Snapshot Error:", error);
+                showAlert(errorAlert, `Failed to fetch attendance data: ${error.message}`);
+            });
+            
+            // Listener 3: Wage Payments
+            onSnapshot(query(paymentsCollection), (snapshot) => {
+                paymentsListBody.innerHTML = '';
+                let recordIndex = 1;
+                snapshot.forEach((doc) => {
+                    const payment = doc.data();
+                    const worker = workersMap[payment.workerId] || {}; // Lookup worker info
+                    
+                    const row = document.createElement('tr');
+                    row.className = 'border-b hover:bg-gray-50';
+                    
+                    // Format amounts to USD currency style
+                    const grossPay = payment.grossPay ? `$${payment.grossPay.toFixed(2)}` : '$0.00';
+                    const netPay = payment.netPay ? `$${payment.netPay.toFixed(2)}` : '$0.00';
+
+                    row.innerHTML = `
+                        <td class="p-4 text-center">${recordIndex++}</td>
+                        <td class="p-4">${new Date(payment.paymentDate).toLocaleDateString()}</td>
+                        <td class="p-4 text-sm">${payment.workerId.substring(0, 5)}...</td>
+                        <td class="p-4">${worker.workerFullName || 'N/A'}</td>
+                        <td class="p-4">${worker.tradeRole || 'N/A'}</td>
+                        <td class="p-4 text-right">$${payment.dailyRate.toFixed(2)}</td>
+                        <td class="p-4 text-center">${payment.daysWorked}</td>
+                        <td class="p-4 text-right font-bold">${grossPay}</td>
+                        <td class="p-4 text-right text-red-600">-$${payment.deductions.toFixed(2)}</td>
+                        <td class="p-4 text-right font-bold text-green-700">${netPay}</td>
+                        <td class="p-4">${payment.paymentMethod || ''}</td>
+                        <td class="p-4 text-sm text-gray-500">${payment.referenceNo || ''}</td>
+                    `;
+                    paymentsListBody.appendChild(row);
+                });
+            }, (error) => {
+                console.error("Firestore Payments Snapshot Error:", error);
+                showAlert(errorAlert, `Failed to fetch payments data: ${error.message}`);
+            });
+        }
+
+
+        // --- Form Submission Handlers ---
+
+        // 1. Labour Register Form
+        registerForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!registerCollection) {
+                showAlert(errorAlert, "Database connection not ready.");
+                return;
+            }
+
+            const formData = new FormData(registerForm);
+            const newWorker = {
+                workerFullName: formData.get('name') || '',
+                nationalId: formData.get('id') || '',
+                homeLocation: formData.get('location') || '',
+                contactPhone: formData.get('phone') || '',
+                skillLevel: formData.get('skill') || '',
+                sex: formData.get('sex') || '',
+                tradeRole: formData.get('trade') || '',
+                startDate: formData.get('start_date') || '',
+                remarks: formData.get('remarks') || '',
+                createdAt: serverTimestamp() 
+            };
+
+            try {
+                await addDoc(registerCollection, newWorker);
+                showAlert(successAlert, `Worker "${newWorker.workerFullName}" added successfully!`);
+                registerForm.reset();
+            } catch (error) {
+                console.error("Error adding worker: ", error);
+                showAlert(errorAlert, `Failed to add worker: ${error.message}`);
+            }
+        });
+
+        // 2. Daily Attendance Form
+        attendanceForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!attendanceCollection || !workersList.length) {
+                showAlert(errorAlert, "Database or worker data not ready.");
+                return;
+            }
+
+            const formData = new FormData(attendanceForm);
+            
+            const newAttendance = {
+                date: formData.get('date') || '',
+                workerId: formData.get('worker_id') || '', // Document ID of the worker
+                location: formData.get('location') || '',
+                status: formData.get('status') || '',
+                hoursWorked: parseFloat(formData.get('hours')) || 0,
+                remarks: formData.get('remarks') || '',
+                createdAt: serverTimestamp() 
+            };
+            
+            try {
+                await addDoc(attendanceCollection, newAttendance);
+                showAlert(successAlert, `Attendance recorded for worker successfully!`);
+                attendanceForm.reset();
+            } catch (error) {
+                console.error("Error adding attendance: ", error);
+                showAlert(errorAlert, `Failed to add attendance: ${error.message}`);
+            }
+        });
+
+        // 3. Wage Payments Form
+        paymentsForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!paymentsCollection || !workersList.length) {
+                showAlert(errorAlert, "Database or worker data not ready.");
+                return;
+            }
+
+            const formData = new FormData(paymentsForm);
+            
+            const dailyRate = parseFloat(formData.get('daily_rate')) || 0;
+            const daysWorked = parseFloat(formData.get('days_worked')) || 0;
+            const deductions = parseFloat(formData.get('deductions')) || 0;
+            
+            const grossPay = dailyRate * daysWorked;
+            const netPay = grossPay - deductions;
+
+            const newPayment = {
+                paymentDate: formData.get('payment_date') || '',
+                workerId: formData.get('worker_id_payment') || '',
+                dailyRate: dailyRate,
+                daysWorked: daysWorked,
+                grossPay: grossPay,
+                deductions: deductions,
+                netPay: netPay,
+                paymentMethod: formData.get('payment_method') || '',
+                referenceNo: formData.get('reference_no') || '',
+                createdAt: serverTimestamp() 
+            };
+            
+            try {
+                await addDoc(paymentsCollection, newPayment);
+                showAlert(successAlert, `Payment recorded for worker: $${netPay.toFixed(2)}`);
+                paymentsForm.reset();
+            } catch (error) {
+                console.error("Error adding payment: ", error);
+                showAlert(errorAlert, `Failed to record payment: ${error.message}`);
+            }
+        });
+
+        window.onload = initFirebase;
+    </script>
+</head>
+<body class="p-4 sm:p-8">
+    <div class="container mx-auto">
+        <header class="mb-6">
+            <h1 class="text-3xl font-extrabold text-teal-700">Collaborative Labour Management System</h1>
+            <p class="text-gray-600 mb-2">3-Sheet online workbook using real-time database.</p>
+            <div id="auth-status" class="text-sm text-gray-500">Connecting...</div>
+        </header>
+
+        <!-- Alerts -->
+        <div id="error-alert" role="alert" class="hidden items-center p-3 mb-4 text-sm text-red-800 rounded-lg bg-red-100" ></div>
+        <div id="success-alert" role="alert" class="hidden items-center p-3 mb-4 text-sm text-green-800 rounded-lg bg-green-100" ></div>
+
+        <!-- Navigation Tabs -->
+        <nav class="flex border-b border-gray-200 mb-8">
+            <button id="tab-register" onclick="switchView('register')" class="p-3 border-b-2 font-semibold transition duration-150 text-teal-600 border-teal-500">
+                1. Labour Register
+            </button>
+            <button id="tab-attendance" onclick="switchView('attendance')" class="p-3 border-b-2 font-semibold transition duration-150 text-gray-500 border-transparent hover:border-gray-300">
+                2. Daily Attendance
+            </button>
+            <button id="tab-payments" onclick="switchView('payments')" class="p-3 border-b-2 font-semibold transition duration-150 text-gray-500 border-transparent hover:border-gray-300">
+                3. Wage Payments
+            </button>
+        </nav>
+
+        <!-- --- 1. Labour Register View --- -->
+        <div id="register-view" class="view-content">
+            <!-- Add New Worker Form -->
+            <div class="form-card p-6 rounded-xl mb-8 border border-gray-200">
+                <h2 class="text-xl font-semibold text-teal-600 mb-4">Add New Worker</h2>
+                <form id="register-form" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    
+                    <!-- Row 1 -->
+                    <input type="text" name="name" placeholder="Full Name (Required)" required class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
+                    <input type="text" name="id" placeholder="National ID / Passport No." class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
+                    <input type="text" name="trade" placeholder="Trade / Role (e.g., Carpenter)" required class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
+                    
+                    <!-- Row 2 -->
+                    <input type="text" name="location" placeholder="Home Location / Village" class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
+                    <input type="tel" name="phone" placeholder="Contact Phone" class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
+                    <input type="date" name="start_date" placeholder="Start Date" required class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
+
+                    <!-- Row 3: Selects -->
+                    <select name="skill" required class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
+                        <option value="" disabled selected>Select Skill Level</option>
+                        <option value="Skilled">Skilled</option>
+                        <option value="Semi-Skilled">Semi-Skilled</option>
+                        <option value="Unskilled">Unskilled</option>
+                    </select>
+                    <select name="sex" required class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
+                        <option value="" disabled selected>Select Sex (M/F)</option>
+                        <option value="M">M</option>
+                        <option value="F">F</option>
+                    </select>
+                    
+                    <input type="text" name="remarks" placeholder="Remarks" class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
+                    
+                    <button type="submit" class="md:col-span-3 p-3 bg-teal-600 text-white font-bold rounded-lg hover:bg-teal-700 transition duration-150">
+                        Add Worker to Register
+                    </button>
+                </form>
+            </div>
+
+            <!-- Worker List Table -->
+            <div class="table-container form-card rounded-xl border border-gray-200">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead>
+                        <tr>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-center">No.</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker Full Name</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker ID (Ref)</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">National ID / Passport No.</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Home Location / Village</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Contact Phone</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-center">Skill Level</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-center">Sex (M/F)</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Trade / Role</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Start Date</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Remarks</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-center">Signature / Thumbprint</th>
+                        </tr>
+                    </thead>
+                    <tbody id="worker-list-body" class="bg-white divide-y divide-gray-200">
+                        <tr>
+                            <td colspan="12" class="p-6 text-center text-gray-500">Loading worker data...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- --- 2. Daily Attendance View --- -->
+        <div id="attendance-view" class="view-content hidden">
+             <!-- Record Attendance Form -->
+            <div class="form-card p-6 rounded-xl mb-8 border border-gray-200">
+                <h2 class="text-xl font-semibold text-amber-600 mb-4">Record Daily Attendance</h2>
+                <form id="attendance-form" class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    
+                    <!-- Row 1 -->
+                    <input type="date" name="date" required class="p-2 border border-gray-300 rounded-lg focus:ring-amber-500 focus:border-amber-500">
+                    
+                    <select name="worker_id" class="worker-select p-2 border border-gray-300 rounded-lg focus:ring-amber-500 focus:border-amber-500" required>
+                        <option value="" disabled selected>Select Worker</option>
+                        <!-- Options populated by JS -->
+                    </select>
+
+                    <select name="status" required class="p-2 border border-gray-300 rounded-lg focus:ring-amber-500 focus:border-amber-500">
+                        <option value="" disabled selected>Status (P/A/L)</option>
+                        <option value="P">Present (P)</option>
+                        <option value="A">Absent (A)</option>
+                        <option value="L">Leave (L)</option>
+                    </select>
+                    
+                    <input type="number" name="hours" placeholder="Hours Worked (e.g., 8)" min="0" max="24" required class="p-2 border border-gray-300 rounded-lg focus:ring-amber-500 focus:border-amber-500">
+
+                    <!-- Row 2 -->
+                    <input type="text" name="location" placeholder="Location / Activity" class="md:col-span-2 p-2 border border-gray-300 rounded-lg focus:ring-amber-500 focus:border-amber-500">
+                    <input type="text" name="remarks" placeholder="Remarks" class="p-2 border border-gray-300 rounded-lg focus:ring-amber-500 focus:border-amber-500">
+                    
+                    <button type="submit" class="p-3 bg-amber-600 text-white font-bold rounded-lg hover:bg-amber-700 transition duration-150">
+                        Record Attendance
+                    </button>
+                </form>
+            </div>
+
+            <!-- Attendance List Table -->
+            <div class="table-container form-card rounded-xl border border-gray-200">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="attendance-header">
+                        <tr>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-center">No.</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Date</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker ID (Ref)</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker Name</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Location / Activity</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-center">Status</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-center">Hours Worked</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Remarks</th>
+                        </tr>
+                    </thead>
+                    <tbody id="attendance-list-body" class="bg-white divide-y divide-gray-200">
+                        <tr>
+                            <td colspan="8" class="p-6 text-center text-gray-500">Loading attendance data...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- --- 3. Wage Payments View --- -->
+        <div id="payments-view" class="view-content hidden">
+            <!-- Record Payments Form -->
+            <div class="form-card p-6 rounded-xl mb-8 border border-gray-200">
+                <h2 class="text-xl font-semibold text-green-600 mb-4">Record Wage Payment Transaction</h2>
+                <form id="payments-form" class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    
+                    <!-- Row 1 -->
+                    <input type="date" name="payment_date" required class="p-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500">
+                    <select name="worker_id_payment" class="worker-select p-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500" required>
+                        <option value="" disabled selected>Select Worker</option>
+                        <!-- Options populated by JS -->
+                    </select>
+                    <input type="number" name="daily_rate" placeholder="Daily Rate (USD)" step="0.01" min="0.01" required class="p-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500">
+                    <input type="number" name="days_worked" placeholder="Days Paid in Period" step="0.5" min="0" required class="p-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500">
+
+                    <!-- Row 2 -->
+                    <input type="number" name="deductions" placeholder="Deductions (USD)" step="0.01" value="0.00" min="0" required class="p-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500">
+                    <select name="payment_method" required class="p-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500">
+                        <option value="" disabled selected>Payment Method</option>
+                        <option value="Cash">Cash</option>
+                        <option value="Bank">Bank</option>
+                        <option value="Mobile Money">Mobile Money</option>
+                    </select>
+                    <input type="text" name="reference_no" placeholder="Reference / Receipt No." class="p-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500">
+                    
+                    <button type="submit" class="p-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-700 transition duration-150">
+                        Record Payment
+                    </button>
+                </form>
+            </div>
+
+            <!-- Payments List Table -->
+            <div class="table-container form-card rounded-xl border border-gray-200">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="payments-header">
+                        <tr>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-center">No.</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Payment Date</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker ID (Ref)</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker Name</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Trade / Role</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-right">Daily Rate (USD)</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-center">Days Worked</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-right">Gross Pay (USD)</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-right">Deductions (USD)</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-right">Net Pay (USD)</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Payment Method</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Reference / Receipt No.</th>
+                        </tr>
+                    </thead>
+                    <tbody id="payments-list-body" class="bg-white divide-y divide-gray-200">
+                        <tr>
+                            <td colspan="12" class="p-6 text-center text-gray-500">Loading payment data...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>
