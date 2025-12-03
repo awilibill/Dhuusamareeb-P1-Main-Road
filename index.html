@@ -69,6 +69,7 @@
 
         let db, auth;
         let userId = '';
+        let isAuthReady = false; // New flag to track authentication state
         
         // Firestore Collection References
         let registerCollection, attendanceCollection, paymentsCollection;
@@ -306,12 +307,12 @@
                 db = getFirestore(app);
                 auth = getAuth(app);
                 
-                // 1. Authentication
-                // Use onAuthStateChanged to manage state asynchronously
+                // 1. Authentication Listener
                 const unsubscribe = onAuthStateChanged(auth, async (user) => {
                     if (user) {
                         userId = user.uid;
-                        authStatusElement.innerHTML = `Connected as User ID: <span class="font-mono text-xs p-1 bg-green-100 rounded">${userId}</span>`;
+                        isAuthReady = true; // Set flag
+                        authStatusElement.innerHTML = `✅ Connected as User ID: <span class="font-mono text-xs p-1 bg-green-100 rounded">${userId}</span>`;
                         
                         // Define public collection paths using the provided or manual app ID
                         const base = `/artifacts/${appId}/public/data`;
@@ -326,6 +327,7 @@
                         unsubscribe(); // Stop listening after successful sign-in
                     } else {
                         // Attempt sign in with custom token (Canvas environment) or anonymously (GitHub Pages)
+                        authStatusElement.innerHTML = `⚠️ Authenticating...`;
                         if (initialAuthToken) {
                             // Canvas environment auth flow
                             await signInWithCustomToken(auth, initialAuthToken);
@@ -338,7 +340,7 @@
 
             } catch (error) {
                 console.error("Firebase Initialization/Authentication Error:", error);
-                authStatusElement.textContent = `Critical Error: ${error.message}. Check your Firebase config and Firestore rules.`;
+                authStatusElement.textContent = `❌ Critical Error: ${error.message}. Check your Firebase config and Firestore rules.`;
                 showAlert(errorAlert, `Critical Error: ${error.message}. See console for details.`, 8000);
                 setFormStatus(false); // Keep forms disabled on critical error
             }
@@ -347,6 +349,12 @@
         // --- Realtime Data Listeners (onSnapshot) ---
 
         function startRealtimeListeners() {
+            // Guard clause: Ensure we are authenticated before starting listeners
+            if (!isAuthReady || !db) {
+                console.warn("Attempted to start listeners before authentication was ready.");
+                return;
+            }
+
             // Listener 1: Labour Register (Worker Map Builder)
             onSnapshot(query(registerCollection), (snapshot) => {
                 workerListBody.innerHTML = '';
@@ -392,8 +400,13 @@
                 // Important: Re-populate selects whenever the worker list updates
                 populateWorkerSelects();
             }, (error) => {
+                // *** IMPROVED ERROR LOGGING FOR DEBUGGING ***
                 console.error("Firestore Register Snapshot Error:", error);
-                showAlert(errorAlert, `Failed to fetch register data: ${error.message}`);
+                const errorMessage = error.message.includes('permission denied') 
+                    ? "🔴 PERMISSION DENIED: Check your Firestore Security Rules." 
+                    : `Failed to fetch register data: ${error.message}`;
+                showAlert(errorAlert, errorMessage);
+                workerListBody.innerHTML = `<tr><td colspan="12" class="p-6 text-center text-red-500 font-bold">${errorMessage}</td></tr>`;
             });
 
             // Listener 2: Daily Attendance
@@ -432,8 +445,12 @@
                 }
                 
             }, (error) => {
+                // *** IMPROVED ERROR LOGGING FOR DEBUGGING ***
                 console.error("Firestore Attendance Snapshot Error:", error);
-                showAlert(errorAlert, `Failed to fetch attendance data: ${error.message}`);
+                const errorMessage = error.message.includes('permission denied') 
+                    ? "🔴 PERMISSION DENIED: Check your Firestore Security Rules." 
+                    : `Failed to fetch attendance data: ${error.message}`;
+                showAlert(errorAlert, errorMessage);
             });
             
             // Listener 3: Wage Payments
@@ -481,8 +498,12 @@
                 }
                 
             }, (error) => {
+                // *** IMPROVED ERROR LOGGING FOR DEBUGGING ***
                 console.error("Firestore Payments Snapshot Error:", error);
-                showAlert(errorAlert, `Failed to fetch payments data: ${error.message}`);
+                const errorMessage = error.message.includes('permission denied') 
+                    ? "🔴 PERMISSION DENIED: Check your Firestore Security Rules." 
+                    : `Failed to fetch payments data: ${error.message}`;
+                showAlert(errorAlert, errorMessage);
             });
         }
 
@@ -595,7 +616,11 @@
                 <!-- Title Color is now Green-600 -->
                 <h1 class="text-3xl font-extrabold text-emerald-600">Dhusamareb Road Package 1 Labour Management Record</h1>
                 <p class="text-gray-600 mb-2">3-Sheet online workbook using real-time database.</p>
-                <div id="auth-status" class="text-sm text-gray-500">Connecting...</div>
+                <!-- Status now includes an icon for clarity -->
+                <div id="auth-status" class="text-sm text-gray-500 flex items-center">
+                    <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-gray-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                    Connecting...
+                </div>
             </div>
             <!-- Download Button using Biciv Accent Color (Cyan) -->
             <button onclick="downloadAllData()" class="mt-4 sm:mt-0 px-4 py-2 bg-cyan-600 text-white font-bold rounded-lg shadow-md hover:bg-cyan-700 transition duration-150 flex items-center form-submit-btn opacity-50 cursor-not-allowed" disabled>
