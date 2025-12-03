@@ -5,11 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dhusamareb Road Package 1 Labour Management Record</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Load Orbitron font for unique IP styling -->
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+    
     <style>
-        /* Custom styles for better look and feel */
+        /* Custom styles using Biciv Design inspired colors (Blue/Cyan/Grey) */
         body {
             font-family: 'Inter', sans-serif;
-            background-color: #f7f9fb;
+            background-color: #f7f9fb; /* Light background */
         }
         .container {
             max-width: 1200px;
@@ -26,14 +30,19 @@
         th {
             position: sticky;
             top: 0;
-            background-color: #e0f2f1; /* Light Blue/Teal for header */
+            background-color: #dbeafe; /* Light Blue 100 for header */
             z-index: 10;
         }
         .attendance-header th {
-            background-color: #ffeccb; /* Light Orange for Attendance header */
+            background-color: #fef3c7; /* Light Yellow/Amber for Attendance header */
         }
         .payments-header th {
-            background-color: #c7e8c4; /* Light Green for Payments header */
+            background-color: #d1fae5; /* Light Green for Payments header */
+        }
+        /* Unique font style for the Intellectual Property footer */
+        .ip-font {
+            font-family: 'Orbitron', sans-serif;
+            font-weight: 700;
         }
     </style>
     <!-- Load Firebase Modules -->
@@ -61,7 +70,7 @@
         let db, auth;
         let userId = '';
         
-        // Firestore Collection References (Public data path is used for collaborative project records)
+        // Firestore Collection References
         let registerCollection, attendanceCollection, paymentsCollection;
         
         // Global Data Stores for UI rendering and Export
@@ -97,15 +106,28 @@
 
         // --- Utility Functions ---
 
+        // Function to enable/disable all interactive buttons during authentication/error
+        function setFormStatus(enabled) {
+            document.querySelectorAll('.form-submit-btn').forEach(btn => {
+                btn.disabled = !enabled;
+                if (enabled) {
+                    btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                } else {
+                    btn.classList.add('opacity-50', 'cursor-not-allowed');
+                }
+            });
+        }
+
+
         // Function to switch visible content view
         window.switchView = function(viewName) {
             Object.keys(contentViews).forEach(key => {
                 contentViews[key].classList.add('hidden');
-                document.getElementById(`tab-${key}`).classList.remove('border-teal-500', 'text-teal-600');
+                document.getElementById(`tab-${key}`).classList.remove('border-cyan-500', 'text-blue-800');
                 document.getElementById(`tab-${key}`).classList.add('border-transparent', 'text-gray-500');
             });
             contentViews[viewName].classList.remove('hidden');
-            document.getElementById(`tab-${viewName}`).classList.add('border-teal-500', 'text-teal-600');
+            document.getElementById(`tab-${viewName}`).classList.add('border-cyan-500', 'text-blue-800');
             document.getElementById(`tab-${viewName}`).classList.remove('border-transparent', 'text-gray-500');
         }
 
@@ -248,6 +270,8 @@
         // --- Firebase Initialization ---
 
         async function initFirebase() {
+            // CRITICAL FIX: Disable forms until auth is complete to prevent "Database connection not ready" errors.
+            setFormStatus(false); 
             try {
                 if (!firebaseConfig) {
                     throw new Error("Firebase configuration not available.");
@@ -269,9 +293,10 @@
                         attendanceCollection = collection(db, `${base}/daily_attendance`);
                         paymentsCollection = collection(db, `${base}/wage_payments`);
                         
-                        // 2. Start listening to data once authenticated
+                        // 2. Start listening to data once authenticated and collections are defined
                         startRealtimeListeners();
                         switchView('register'); // Default view
+                        setFormStatus(true); // Re-enable forms on success
                     } else {
                         // Sign in using custom token or anonymously
                         if (initialAuthToken) {
@@ -285,6 +310,7 @@
             } catch (error) {
                 console.error("Firebase Initialization/Authentication Error:", error);
                 authStatusElement.textContent = `Error: ${error.message}`;
+                setFormStatus(false); // Keep forms disabled on critical error
             }
         }
 
@@ -314,8 +340,8 @@
 
                     row.innerHTML = `
                         <td class="p-4 text-center">${workerIndex++}</td>
-                        <td class="p-4 font-semibold text-teal-700">${worker.workerFullName || ''}</td>
-                        <td class="p-4 text-sm font-mono">${customWorkerNo}</td> <!-- Use the custom Worker No -->
+                        <td class="p-4 font-semibold text-blue-700">${worker.workerFullName || ''}</td>
+                        <td class="p-4 text-sm font-mono">${customWorkerNo}</td>
                         <td class="p-4">${worker.nationalId || ''}</td>
                         <td class="p-4">${worker.homeLocation || ''}</td>
                         <td class="p-4">${worker.contactPhone || ''}</td>
@@ -333,6 +359,7 @@
                     workerListBody.innerHTML = '<tr><td colspan="12" class="p-6 text-center text-gray-500">No workers registered yet.</td></tr>';
                 }
 
+                // Important: Re-populate selects whenever the worker list updates
                 populateWorkerSelects();
             }, (error) => {
                 console.error("Firestore Register Snapshot Error:", error);
@@ -394,8 +421,9 @@
                     
                     // Format amounts
                     const dailyRate = payment.dailyRate || 0;
+                    const daysWorked = payment.daysWorked || 0;
                     const deductions = payment.deductions || 0;
-                    const grossPay = payment.dailyRate * payment.daysWorked;
+                    const grossPay = dailyRate * daysWorked;
                     const netPay = grossPay - deductions;
                     
                     const displayNo = worker.workerNo || payment.workerId.substring(0, 5) + '...';
@@ -432,10 +460,14 @@
         // 1. Labour Register Form
         registerForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            if (!registerCollection) { showAlert(errorAlert, "Database connection not ready."); return; }
+            // Guard clause to ensure collection is ready (though buttons should be disabled)
+            if (!registerCollection) { 
+                showAlert(errorAlert, "Database connection not ready. Please wait for the system to initialize."); 
+                return; 
+            }
             const formData = new FormData(registerForm);
             const newWorker = {
-                workerNo: formData.get('worker_no') || '', // New field
+                workerNo: formData.get('worker_no') || '', 
                 workerFullName: formData.get('name') || '', 
                 nationalId: formData.get('id') || '', 
                 homeLocation: formData.get('location') || '', 
@@ -460,7 +492,10 @@
         // 2. Attendance form submission logic
         attendanceForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            if (!attendanceCollection || !workersList.length) { showAlert(errorAlert, "Database or worker data not ready."); return; }
+            if (!attendanceCollection || !workersList.length) { 
+                showAlert(errorAlert, !attendanceCollection ? "Database connection not ready." : "No workers registered yet."); 
+                return; 
+            }
             const formData = new FormData(attendanceForm);
             const newAttendance = {
                 date: formData.get('date') || '', 
@@ -484,12 +519,16 @@
         // 3. Payments form submission logic
         paymentsForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            if (!paymentsCollection || !workersList.length) { showAlert(errorAlert, "Database or worker data not ready."); return; }
+            if (!paymentsCollection || !workersList.length) { 
+                showAlert(errorAlert, !paymentsCollection ? "Database connection not ready." : "No workers registered yet."); 
+                return; 
+            }
             const formData = new FormData(paymentsForm);
             const dailyRate = parseFloat(formData.get('daily_rate')) || 0;
             const daysWorked = parseFloat(formData.get('days_worked')) || 0;
             const deductions = parseFloat(formData.get('deductions')) || 0;
-            const grossPay = dailyRate * daysWorked;
+            // Calculations done client-side for immediate feedback/simplicity
+            const grossPay = dailyRate * daysWorked; 
             const netPay = grossPay - deductions;
             
             const newPayment = {
@@ -518,15 +557,17 @@
         window.onload = initFirebase;
     </script>
 </head>
-<body class="p-4 sm:p-8">
-    <div class="container mx-auto">
+<body class="flex flex-col min-h-screen">
+    <div class="container mx-auto p-4 sm:p-8 flex-grow">
         <header class="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center">
             <div>
-                <h1 class="text-3xl font-extrabold text-teal-700">Dhusamareb Road Package 1 Labour Management Record</h1>
+                <!-- Updated Title Color to Green-600 -->
+                <h1 class="text-3xl font-extrabold text-emerald-600">Dhusamareb Road Package 1 Labour Management Record</h1>
                 <p class="text-gray-600 mb-2">3-Sheet online workbook using real-time database.</p>
                 <div id="auth-status" class="text-sm text-gray-500">Connecting...</div>
             </div>
-            <button onclick="downloadAllData()" class="mt-4 sm:mt-0 px-4 py-2 bg-blue-600 text-white font-bold rounded-lg shadow-md hover:bg-blue-700 transition duration-150 flex items-center">
+            <!-- Download Button using Biciv Accent Color (Cyan) -->
+            <button onclick="downloadAllData()" class="mt-4 sm:mt-0 px-4 py-2 bg-cyan-600 text-white font-bold rounded-lg shadow-md hover:bg-cyan-700 transition duration-150 flex items-center form-submit-btn opacity-50 cursor-not-allowed" disabled>
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5 mr-2">
                     <path fill-rule="evenodd" d="M10 18a.75.75 0 0 1-.75-.75V4.659l-1.953 1.954a.75.75 0 0 1-1.06-1.06l3.25-3.25a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 1 1-1.06 1.06l-1.953-1.954V17.25c0 .414-.336.75-.75.75Z" clip-rule="evenodd" />
                 </svg>
@@ -538,9 +579,9 @@
         <div id="error-alert" role="alert" class="hidden items-center p-3 mb-4 text-sm text-red-800 rounded-lg bg-red-100" ></div>
         <div id="success-alert" role="alert" class="hidden items-center p-3 mb-4 text-sm text-green-800 rounded-lg bg-green-100" ></div>
 
-        <!-- Navigation Tabs -->
+        <!-- Navigation Tabs using Biciv Accent Color (Cyan) -->
         <nav class="flex border-b border-gray-200 mb-8">
-            <button id="tab-register" onclick="switchView('register')" class="p-3 border-b-2 font-semibold transition duration-150 text-teal-600 border-teal-500">
+            <button id="tab-register" onclick="switchView('register')" class="p-3 border-b-2 font-semibold transition duration-150 text-blue-800 border-cyan-500">
                 1. Labour Register
             </button>
             <button id="tab-attendance" onclick="switchView('attendance')" class="p-3 border-b-2 font-semibold transition duration-150 text-gray-500 border-transparent hover:border-gray-300">
@@ -555,36 +596,37 @@
         <div id="register-view" class="view-content">
             <!-- Add New Worker Form -->
             <div class="form-card p-6 rounded-xl mb-8 border border-gray-200">
-                <h2 class="text-xl font-semibold text-teal-600 mb-4">Add New Worker</h2>
+                <h2 class="text-xl font-semibold text-blue-800 mb-4">Add New Worker</h2>
                 <form id="register-form" class="grid grid-cols-1 md:grid-cols-4 gap-4">
                     
                     <!-- Row 1: Added Worker No -->
-                    <input type="text" name="worker_no" placeholder="Worker No. (e.g., W-001)" required class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
-                    <input type="text" name="name" placeholder="Full Name (Required)" required class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
-                    <input type="text" name="trade" placeholder="Trade / Role (e.g., Carpenter)" required class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
-                    <input type="text" name="id" placeholder="National ID / Passport No." class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
+                    <input type="text" name="worker_no" placeholder="Worker No. (e.g., W-001)" required class="p-2 border border-gray-300 rounded-lg focus:ring-cyan-500 focus:border-cyan-500">
+                    <input type="text" name="name" placeholder="Full Name (Required)" required class="p-2 border border-gray-300 rounded-lg focus:ring-cyan-500 focus:border-cyan-500">
+                    <input type="text" name="trade" placeholder="Trade / Role (e.g., Carpenter)" required class="p-2 border border-gray-300 rounded-lg focus:ring-cyan-500 focus:border-cyan-500">
+                    <input type="text" name="id" placeholder="National ID / Passport No." class="p-2 border border-gray-300 rounded-lg focus:ring-cyan-500 focus:border-cyan-500">
                     
                     <!-- Row 2 -->
-                    <input type="text" name="location" placeholder="Home Location / Village" class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
-                    <input type="tel" name="phone" placeholder="Contact Phone" class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
-                    <input type="date" name="start_date" placeholder="Start Date" required class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
+                    <input type="text" name="location" placeholder="Home Location / Village" class="p-2 border border-gray-300 rounded-lg focus:ring-cyan-500 focus:border-cyan-500">
+                    <input type="tel" name="phone" placeholder="Contact Phone" class="p-2 border border-gray-300 rounded-lg focus:ring-cyan-500 focus:border-cyan-500">
+                    <input type="date" name="start_date" placeholder="Start Date" required class="p-2 border border-gray-300 rounded-lg focus:ring-cyan-500 focus:border-cyan-500">
 
                     <!-- Row 3: Selects -->
-                    <select name="skill" required class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
+                    <select name="skill" required class="p-2 border border-gray-300 rounded-lg focus:ring-cyan-500 focus:border-cyan-500">
                         <option value="" disabled selected>Select Skill Level</option>
                         <option value="Skilled">Skilled</option>
                         <option value="Semi-Skilled">Semi-Skilled</option>
                         <option value="Unskilled">Unskilled</option>
                     </select>
-                    <select name="sex" required class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
+                    <select name="sex" required class="p-2 border border-gray-300 rounded-lg focus:ring-cyan-500 focus:border-cyan-500">
                         <option value="" disabled selected>Select Sex (M/F)</option>
                         <option value="M">M</option>
                         <option value="F">F</option>
                     </select>
                     
-                    <input type="text" name="remarks" placeholder="Remarks" class="md:col-span-2 p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
+                    <input type="text" name="remarks" placeholder="Remarks" class="md:col-span-2 p-2 border border-gray-300 rounded-lg focus:ring-cyan-500 focus:border-cyan-500">
                     
-                    <button type="submit" class="md:col-span-4 p-3 bg-teal-600 text-white font-bold rounded-lg hover:bg-teal-700 transition duration-150">
+                    <!-- Submit Button using Biciv Accent Color (Cyan) -->
+                    <button type="submit" class="md:col-span-4 p-3 bg-cyan-600 text-white font-bold rounded-lg hover:bg-cyan-700 transition duration-150 form-submit-btn opacity-50 cursor-not-allowed" disabled>
                         Add Worker to Register
                     </button>
                 </form>
@@ -597,7 +639,7 @@
                         <tr>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-center">No.</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker Full Name</th>
-                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker No.</th> <!-- Updated Header -->
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker No.</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">National ID / Passport No.</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Home Location / Village</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Contact Phone</th>
@@ -646,7 +688,8 @@
                     <input type="text" name="location" placeholder="Location / Activity" class="md:col-span-2 p-2 border border-gray-300 rounded-lg focus:ring-amber-500 focus:border-amber-500">
                     <input type="text" name="remarks" placeholder="Remarks" class="p-2 border border-gray-300 rounded-lg focus:ring-amber-500 focus:border-amber-500">
                     
-                    <button type="submit" class="p-3 bg-amber-600 text-white font-bold rounded-lg hover:bg-amber-700 transition duration-150">
+                    <!-- Submit Button -->
+                    <button type="submit" class="p-3 bg-amber-600 text-white font-bold rounded-lg hover:bg-amber-700 transition duration-150 form-submit-btn opacity-50 cursor-not-allowed" disabled>
                         Record Attendance
                     </button>
                 </form>
@@ -659,7 +702,7 @@
                         <tr>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-center">No.</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Date</th>
-                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker No.</th> <!-- Updated Header -->
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker No.</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker Name</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Location / Activity</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-center">Status</th>
@@ -702,7 +745,8 @@
                     </select>
                     <input type="text" name="reference_no" placeholder="Reference / Receipt No." class="p-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500">
                     
-                    <button type="submit" class="p-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-700 transition duration-150">
+                    <!-- Submit Button -->
+                    <button type="submit" class="p-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-700 transition duration-150 form-submit-btn opacity-50 cursor-not-allowed" disabled>
                         Record Payment
                     </button>
                 </form>
@@ -715,7 +759,7 @@
                         <tr>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-center">No.</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Payment Date</th>
-                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker No.</th> <!-- Updated Header -->
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker No.</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker Name</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Trade / Role</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-right">Daily Rate (USD)</th>
@@ -737,5 +781,16 @@
         </div>
 
     </div>
+
+    <!-- Footer for IP and Designer Attribution (Updated year and font) -->
+    <footer class="mt-8 p-4 border-t border-gray-200 text-center bg-gray-50">
+        <p class="text-sm text-gray-600 ip-font">
+            &copy; 2025 Intellectual Property Rights Acknowledged for 
+            <span class="font-bold text-blue-800">Biciv Designs & Construction Company Limited</span>.
+        </p>
+        <p class="text-xs text-gray-500 mt-1 ip-font">
+            Designer: Eng Bill Ochieng.
+        </p>
+    </footer>
 </body>
 </html>
