@@ -79,12 +79,32 @@
         let attendanceList = [];// Array of attendance records for display and export
         let paymentsList = [];  // Array of payment records for display and export
 
-        // Canvas provided global variables
-        const firebaseConfig = typeof __firebase_config !== 'undefined' 
+        // =================================================================================
+        // *** CRITICAL STEP FOR GITHUB PAGES HOSTING: YOUR CONFIG IS NOW HARDCODED BELOW ***
+        //
+        // This configuration will be used when the application runs outside of the Canvas environment.
+        const MANUAL_FIREBASE_CONFIG = {
+            apiKey: "AIzaSyDXfRbkP6V8raE3bxXSzoXFAsjZj9ODC_Y",
+            authDomain: "dhuusamareeb-p1-main-road.firebaseapp.com",
+            projectId: "dhuusamareeb-p1-main-road",
+            storageBucket: "dhuusamareeb-p1-main-road.firebasestorage.app",
+            messagingSenderId: "901867324894",
+            appId: "1:901867324894:web:bc671312c0ed62ceff894f",
+            measurementId: "G-WTPP9CD88F"
+        };
+        
+        // This is your Firebase Project ID, used for structuring the public data path.
+        const MANUAL_APP_ID = 'dhuusamareeb-p1-main-road';
+
+        // --- Determine Configuration Source ---
+        // Checks if the Canvas global config is available, otherwise uses the manual config.
+        const firebaseConfig = typeof __firebase_config !== 'undefined' && __firebase_config 
             ? JSON.parse(__firebase_config) 
-            : null;
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            : MANUAL_FIREBASE_CONFIG;
+        
+        const appId = typeof __app_id !== 'undefined' ? __app_id : MANUAL_APP_ID;
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        // =================================================================================
 
         // UI Elements
         const authStatusElement = document.getElementById('auth-status');
@@ -270,24 +290,30 @@
         // --- Firebase Initialization ---
 
         async function initFirebase() {
-            // CRITICAL FIX: Disable forms until auth is complete to prevent "Database connection not ready" errors.
+            // CRITICAL FIX: Disable forms until auth is complete
             setFormStatus(false); 
-            try {
-                if (!firebaseConfig) {
-                    throw new Error("Firebase configuration not available.");
-                }
+            
+            if (!firebaseConfig) {
+                const configError = "Firebase configuration is missing! Please obtain your config object from the Firebase console and paste it into the 'MANUAL_FIREBASE_CONFIG' variable in the script to run this outside of the Canvas environment.";
+                console.error(configError);
+                authStatusElement.innerHTML = `<span class="text-red-600">${configError}</span>`;
+                showAlert(errorAlert, configError, 10000);
+                return; 
+            }
 
+            try {
                 const app = initializeApp(firebaseConfig);
                 db = getFirestore(app);
                 auth = getAuth(app);
                 
                 // 1. Authentication
-                onAuthStateChanged(auth, async (user) => {
+                // Use onAuthStateChanged to manage state asynchronously
+                const unsubscribe = onAuthStateChanged(auth, async (user) => {
                     if (user) {
                         userId = user.uid;
                         authStatusElement.innerHTML = `Connected as User ID: <span class="font-mono text-xs p-1 bg-green-100 rounded">${userId}</span>`;
                         
-                        // Define public collection paths for project data
+                        // Define public collection paths using the provided or manual app ID
                         const base = `/artifacts/${appId}/public/data`;
                         registerCollection = collection(db, `${base}/labour_register`);
                         attendanceCollection = collection(db, `${base}/daily_attendance`);
@@ -297,11 +323,14 @@
                         startRealtimeListeners();
                         switchView('register'); // Default view
                         setFormStatus(true); // Re-enable forms on success
+                        unsubscribe(); // Stop listening after successful sign-in
                     } else {
-                        // Sign in using custom token or anonymously
+                        // Attempt sign in with custom token (Canvas environment) or anonymously (GitHub Pages)
                         if (initialAuthToken) {
+                            // Canvas environment auth flow
                             await signInWithCustomToken(auth, initialAuthToken);
                         } else {
+                            // GitHub Pages / Manual hosting auth flow
                             await signInAnonymously(auth);
                         }
                     }
@@ -309,7 +338,8 @@
 
             } catch (error) {
                 console.error("Firebase Initialization/Authentication Error:", error);
-                authStatusElement.textContent = `Error: ${error.message}`;
+                authStatusElement.textContent = `Critical Error: ${error.message}. Check your Firebase config and Firestore rules.`;
+                showAlert(errorAlert, `Critical Error: ${error.message}. See console for details.`, 8000);
                 setFormStatus(false); // Keep forms disabled on critical error
             }
         }
@@ -423,7 +453,8 @@
                     const dailyRate = payment.dailyRate || 0;
                     const daysWorked = payment.daysWorked || 0;
                     const deductions = payment.deductions || 0;
-                    const grossPay = dailyRate * daysWorked;
+                    // Calculations done client-side for immediate feedback/simplicity
+                    const grossPay = dailyRate * daysWorked; 
                     const netPay = grossPay - deductions;
                     
                     const displayNo = worker.workerNo || payment.workerId.substring(0, 5) + '...';
@@ -456,11 +487,11 @@
         }
 
 
-        // --- Form Submission Handlers ---
+        // --- Form Submission Handlers (Unchanged) ---
         // 1. Labour Register Form
         registerForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            // Guard clause to ensure collection is ready (though buttons should be disabled)
+            // Guard clause to ensure collection is ready
             if (!registerCollection) { 
                 showAlert(errorAlert, "Database connection not ready. Please wait for the system to initialize."); 
                 return; 
@@ -561,7 +592,7 @@
     <div class="container mx-auto p-4 sm:p-8 flex-grow">
         <header class="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center">
             <div>
-                <!-- Updated Title Color to Green-600 -->
+                <!-- Title Color is now Green-600 -->
                 <h1 class="text-3xl font-extrabold text-emerald-600">Dhusamareb Road Package 1 Labour Management Record</h1>
                 <p class="text-gray-600 mb-2">3-Sheet online workbook using real-time database.</p>
                 <div id="auth-status" class="text-sm text-gray-500">Connecting...</div>
