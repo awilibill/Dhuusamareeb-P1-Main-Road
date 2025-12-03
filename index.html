@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Collaborative Labour Management</title>
+    <title>Dhusamareb Road Package 1 Labour Management Record</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         /* Custom styles for better look and feel */
@@ -22,6 +22,7 @@
             overflow-x: auto;
             max-height: 70vh;
         }
+        /* Sticky header for scrollable tables */
         th {
             position: sticky;
             top: 0;
@@ -54,18 +55,22 @@
             setLogLevel 
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+        // Enable debug logging for Firebase
         setLogLevel('Debug');
 
         let db, auth;
         let userId = '';
         
-        // Firestore Collection References
+        // Firestore Collection References (Public data path is used for collaborative project records)
         let registerCollection, attendanceCollection, paymentsCollection;
         
-        // Global map to store worker data for lookups (Worker ID -> Worker Data)
-        let workersMap = {}; 
-        let workersList = []; // Array of workers for dropdowns
+        // Global Data Stores for UI rendering and Export
+        let workersMap = {};    // Firestore ID -> Worker Data (for fast lookups)
+        let workersList = [];   // Array of workers for Register display and export
+        let attendanceList = [];// Array of attendance records for display and export
+        let paymentsList = [];  // Array of payment records for display and export
 
+        // Canvas provided global variables
         const firebaseConfig = typeof __firebase_config !== 'undefined' 
             ? JSON.parse(__firebase_config) 
             : null;
@@ -120,11 +125,15 @@
             workerSelects.forEach(select => {
                 const selectedValue = select.value;
                 select.innerHTML = '<option value="" disabled selected>Select Worker</option>';
+                // Sort workers by their custom workerNo
+                workersList.sort((a, b) => (a.data.workerNo || '').localeCompare(b.data.workerNo || ''));
+                
                 workersList.forEach(worker => {
                     const option = document.createElement('option');
-                    // We use the worker's document ID as the Worker No. reference for Firestore
+                    // Use the Firestore ID as the value for lookups, display the custom Worker No
                     option.value = worker.id;
-                    option.textContent = `${worker.data.workerFullName} (${worker.data.tradeRole})`;
+                    const displayNo = worker.data.workerNo ? `[${worker.data.workerNo}] ` : '';
+                    option.textContent = `${displayNo}${worker.data.workerFullName} (${worker.data.tradeRole})`;
                     if (worker.id === selectedValue) {
                         option.selected = true;
                     }
@@ -132,6 +141,109 @@
                 });
             });
         }
+
+        // --- Data Export Functions (CSV) ---
+
+        // Helper to format timestamp into a readable string
+        function formatTimestamp(timestamp) {
+            if (timestamp && timestamp.toDate) {
+                return timestamp.toDate().toLocaleString('en-US', { 
+                    year: 'numeric', month: '2-digit', day: '2-digit', 
+                    hour: '2-digit', minute: '2-digit', second: '2-digit',
+                    hour12: false
+                });
+            }
+            return '';
+        }
+
+        function convertToCSV(data, headers) {
+            let csv = headers.join(',') + '\n';
+            data.forEach(row => {
+                let line = headers.map(header => {
+                    // Check if the value is defined and escape commas/quotes
+                    let value = row[header] !== undefined ? row[header] : '';
+                    
+                    if (typeof value === 'string' && (value.includes(',') || value.includes('"'))) {
+                        value = `"${value.replace(/"/g, '""')}"`;
+                    }
+                    return value;
+                }).join(',');
+                csv += line + '\n';
+            });
+            return csv;
+        }
+
+        function downloadCSV(csv, filename) {
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            if (link.download !== undefined) { 
+                const url = URL.createObjectURL(blob);
+                link.setAttribute("href", url);
+                link.setAttribute("download", filename);
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                showAlert(successAlert, `Downloaded ${filename} successfully!`);
+            }
+        }
+
+        window.downloadAllData = function() {
+            if (workersList.length === 0) {
+                showAlert(errorAlert, "No worker data available to download yet.");
+                return;
+            }
+
+            // --- 1. Labour Register Export ---
+            const registerHeaders = ["Worker ID (Ref)", "workerNo", "workerFullName", "nationalId", "homeLocation", "contactPhone", "skillLevel", "sex", "tradeRole", "startDate", "remarks", "createdAt"];
+            const registerData = workersList.map(w => {
+                const data = w.data;
+                return {
+                    "Worker ID (Ref)": w.id, // Keep Firestore ID for backend reference
+                    ...data,
+                    createdAt: formatTimestamp(data.createdAt) // Formatted timestamp
+                };
+            });
+            downloadCSV(convertToCSV(registerData, registerHeaders), `Labour_Register_Export_${new Date().toISOString().slice(0, 10)}.csv`);
+
+            // --- 2. Daily Attendance Export ---
+            const attendanceHeaders = ["workerNo", "workerFullName", "date", "location", "status", "hoursWorked", "remarks", "createdAt"];
+            const attendanceData = attendanceList.map(a => {
+                const worker = workersMap[a.workerId] || { workerNo: 'N/A', workerFullName: 'N/A' };
+                return {
+                    workerNo: worker.workerNo,
+                    workerFullName: worker.workerFullName,
+                    date: new Date(a.date).toLocaleDateString(),
+                    location: a.location,
+                    status: a.status,
+                    hoursWorked: a.hoursWorked,
+                    remarks: a.remarks,
+                    createdAt: formatTimestamp(a.createdAt) // Formatted timestamp
+                };
+            });
+            downloadCSV(convertToCSV(attendanceData, attendanceHeaders), `Daily_Attendance_Export_${new Date().toISOString().slice(0, 10)}.csv`);
+
+            // --- 3. Wage Payments Export ---
+            const paymentsHeaders = ["workerNo", "workerFullName", "paymentDate", "dailyRate", "daysWorked", "grossPay", "deductions", "netPay", "paymentMethod", "referenceNo", "createdAt"];
+            const paymentsData = paymentsList.map(p => {
+                const worker = workersMap[p.workerId] || { workerNo: 'N/A', workerFullName: 'N/A' };
+                return {
+                    workerNo: worker.workerNo,
+                    workerFullName: worker.workerFullName,
+                    paymentDate: new Date(p.paymentDate).toLocaleDateString(),
+                    dailyRate: p.dailyRate?.toFixed(2),
+                    daysWorked: p.daysWorked,
+                    grossPay: p.grossPay?.toFixed(2),
+                    deductions: p.deductions?.toFixed(2),
+                    netPay: p.netPay?.toFixed(2),
+                    paymentMethod: p.paymentMethod,
+                    referenceNo: p.referenceNo,
+                    createdAt: formatTimestamp(p.createdAt) // Formatted timestamp
+                };
+            });
+            downloadCSV(convertToCSV(paymentsData, paymentsHeaders), `Wage_Payments_Export_${new Date().toISOString().slice(0, 10)}.csv`);
+        }
+
 
         // --- Firebase Initialization ---
 
@@ -151,7 +263,7 @@
                         userId = user.uid;
                         authStatusElement.innerHTML = `Connected as User ID: <span class="font-mono text-xs p-1 bg-green-100 rounded">${userId}</span>`;
                         
-                        // Define public collection paths
+                        // Define public collection paths for project data
                         const base = `/artifacts/${appId}/public/data`;
                         registerCollection = collection(db, `${base}/labour_register`);
                         attendanceCollection = collection(db, `${base}/daily_attendance`);
@@ -161,6 +273,7 @@
                         startRealtimeListeners();
                         switchView('register'); // Default view
                     } else {
+                        // Sign in using custom token or anonymously
                         if (initialAuthToken) {
                             await signInWithCustomToken(auth, initialAuthToken);
                         } else {
@@ -189,7 +302,7 @@
                     const worker = doc.data();
                     const workerId = doc.id;
                     
-                    // Populate worker lookup map
+                    // Populate worker lookup map and list
                     workersMap[workerId] = worker;
                     workersList.push({ id: workerId, data: worker });
                     
@@ -197,11 +310,12 @@
                     row.className = 'border-b hover:bg-gray-50';
                     
                     const startDate = worker.startDate ? new Date(worker.startDate).toLocaleDateString() : 'N/A';
+                    const customWorkerNo = worker.workerNo || 'N/A';
 
                     row.innerHTML = `
                         <td class="p-4 text-center">${workerIndex++}</td>
                         <td class="p-4 font-semibold text-teal-700">${worker.workerFullName || ''}</td>
-                        <td class="p-4 text-sm">${workerId.substring(0, 5)}...</td> <!-- Worker No. is the Document ID -->
+                        <td class="p-4 text-sm font-mono">${customWorkerNo}</td> <!-- Use the custom Worker No -->
                         <td class="p-4">${worker.nationalId || ''}</td>
                         <td class="p-4">${worker.homeLocation || ''}</td>
                         <td class="p-4">${worker.contactPhone || ''}</td>
@@ -215,6 +329,10 @@
                     workerListBody.appendChild(row);
                 });
                 
+                if (workersList.length === 0) {
+                    workerListBody.innerHTML = '<tr><td colspan="12" class="p-6 text-center text-gray-500">No workers registered yet.</td></tr>';
+                }
+
                 populateWorkerSelects();
             }, (error) => {
                 console.error("Firestore Register Snapshot Error:", error);
@@ -224,9 +342,11 @@
             // Listener 2: Daily Attendance
             onSnapshot(query(attendanceCollection), (snapshot) => {
                 attendanceListBody.innerHTML = '';
+                attendanceList = []; // Reset list
                 let recordIndex = 1;
                 snapshot.forEach((doc) => {
                     const record = doc.data();
+                    attendanceList.push(record); // Add to export list
                     const worker = workersMap[record.workerId] || {}; // Lookup worker info
                     
                     const row = document.createElement('tr');
@@ -234,11 +354,13 @@
 
                     const statusClass = record.status === 'P' ? 'bg-green-100 text-green-700' : 
                                         record.status === 'L' ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700';
+                    
+                    const displayNo = worker.workerNo || record.workerId.substring(0, 5) + '...';
 
                     row.innerHTML = `
                         <td class="p-4 text-center">${recordIndex++}</td>
                         <td class="p-4">${new Date(record.date).toLocaleDateString()}</td>
-                        <td class="p-4 text-sm">${record.workerId.substring(0, 5)}...</td>
+                        <td class="p-4 text-sm font-mono">${displayNo}</td>
                         <td class="p-4">${worker.workerFullName || 'N/A'}</td>
                         <td class="p-4">${record.location || 'N/A'}</td>
                         <td class="p-4 text-center font-bold ${statusClass}">${record.status || ''}</td>
@@ -247,6 +369,11 @@
                     `;
                     attendanceListBody.appendChild(row);
                 });
+                
+                if (attendanceList.length === 0) {
+                    attendanceListBody.innerHTML = '<tr><td colspan="8" class="p-6 text-center text-gray-500">No attendance records yet.</td></tr>';
+                }
+                
             }, (error) => {
                 console.error("Firestore Attendance Snapshot Error:", error);
                 showAlert(errorAlert, `Failed to fetch attendance data: ${error.message}`);
@@ -255,34 +382,45 @@
             // Listener 3: Wage Payments
             onSnapshot(query(paymentsCollection), (snapshot) => {
                 paymentsListBody.innerHTML = '';
+                paymentsList = []; // Reset list
                 let recordIndex = 1;
                 snapshot.forEach((doc) => {
                     const payment = doc.data();
+                    paymentsList.push(payment); // Add to export list
                     const worker = workersMap[payment.workerId] || {}; // Lookup worker info
                     
                     const row = document.createElement('tr');
                     row.className = 'border-b hover:bg-gray-50';
                     
-                    // Format amounts to USD currency style
-                    const grossPay = payment.grossPay ? `$${payment.grossPay.toFixed(2)}` : '$0.00';
-                    const netPay = payment.netPay ? `$${payment.netPay.toFixed(2)}` : '$0.00';
+                    // Format amounts
+                    const dailyRate = payment.dailyRate || 0;
+                    const deductions = payment.deductions || 0;
+                    const grossPay = payment.dailyRate * payment.daysWorked;
+                    const netPay = grossPay - deductions;
+                    
+                    const displayNo = worker.workerNo || payment.workerId.substring(0, 5) + '...';
 
                     row.innerHTML = `
                         <td class="p-4 text-center">${recordIndex++}</td>
                         <td class="p-4">${new Date(payment.paymentDate).toLocaleDateString()}</td>
-                        <td class="p-4 text-sm">${payment.workerId.substring(0, 5)}...</td>
+                        <td class="p-4 text-sm font-mono">${displayNo}</td>
                         <td class="p-4">${worker.workerFullName || 'N/A'}</td>
                         <td class="p-4">${worker.tradeRole || 'N/A'}</td>
-                        <td class="p-4 text-right">$${payment.dailyRate.toFixed(2)}</td>
+                        <td class="p-4 text-right">$${dailyRate.toFixed(2)}</td>
                         <td class="p-4 text-center">${payment.daysWorked}</td>
-                        <td class="p-4 text-right font-bold">${grossPay}</td>
-                        <td class="p-4 text-right text-red-600">-$${payment.deductions.toFixed(2)}</td>
-                        <td class="p-4 text-right font-bold text-green-700">${netPay}</td>
+                        <td class="p-4 text-right font-bold">$${grossPay.toFixed(2)}</td>
+                        <td class="p-4 text-right text-red-600">-$${deductions.toFixed(2)}</td>
+                        <td class="p-4 text-right font-bold text-green-700">$${netPay.toFixed(2)}</td>
                         <td class="p-4">${payment.paymentMethod || ''}</td>
                         <td class="p-4 text-sm text-gray-500">${payment.referenceNo || ''}</td>
                     `;
                     paymentsListBody.appendChild(row);
                 });
+                
+                if (paymentsList.length === 0) {
+                    paymentsListBody.innerHTML = '<tr><td colspan="12" class="p-6 text-center text-gray-500">No payment records yet.</td></tr>';
+                }
+                
             }, (error) => {
                 console.error("Firestore Payments Snapshot Error:", error);
                 showAlert(errorAlert, `Failed to fetch payments data: ${error.message}`);
@@ -291,32 +429,27 @@
 
 
         // --- Form Submission Handlers ---
-
         // 1. Labour Register Form
         registerForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            if (!registerCollection) {
-                showAlert(errorAlert, "Database connection not ready.");
-                return;
-            }
-
+            if (!registerCollection) { showAlert(errorAlert, "Database connection not ready."); return; }
             const formData = new FormData(registerForm);
             const newWorker = {
-                workerFullName: formData.get('name') || '',
-                nationalId: formData.get('id') || '',
-                homeLocation: formData.get('location') || '',
-                contactPhone: formData.get('phone') || '',
-                skillLevel: formData.get('skill') || '',
-                sex: formData.get('sex') || '',
-                tradeRole: formData.get('trade') || '',
-                startDate: formData.get('start_date') || '',
-                remarks: formData.get('remarks') || '',
+                workerNo: formData.get('worker_no') || '', // New field
+                workerFullName: formData.get('name') || '', 
+                nationalId: formData.get('id') || '', 
+                homeLocation: formData.get('location') || '', 
+                contactPhone: formData.get('phone') || '', 
+                skillLevel: formData.get('skill') || '', 
+                sex: formData.get('sex') || '', 
+                tradeRole: formData.get('trade') || '', 
+                startDate: formData.get('start_date') || '', 
+                remarks: formData.get('remarks') || '', 
                 createdAt: serverTimestamp() 
             };
-
             try {
                 await addDoc(registerCollection, newWorker);
-                showAlert(successAlert, `Worker "${newWorker.workerFullName}" added successfully!`);
+                showAlert(successAlert, `Worker [${newWorker.workerNo}] ${newWorker.workerFullName} added successfully!`);
                 registerForm.reset();
             } catch (error) {
                 console.error("Error adding worker: ", error);
@@ -324,26 +457,20 @@
             }
         });
 
-        // 2. Daily Attendance Form
+        // 2. Attendance form submission logic
         attendanceForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            if (!attendanceCollection || !workersList.length) {
-                showAlert(errorAlert, "Database or worker data not ready.");
-                return;
-            }
-
+            if (!attendanceCollection || !workersList.length) { showAlert(errorAlert, "Database or worker data not ready."); return; }
             const formData = new FormData(attendanceForm);
-            
             const newAttendance = {
-                date: formData.get('date') || '',
-                workerId: formData.get('worker_id') || '', // Document ID of the worker
-                location: formData.get('location') || '',
-                status: formData.get('status') || '',
-                hoursWorked: parseFloat(formData.get('hours')) || 0,
-                remarks: formData.get('remarks') || '',
+                date: formData.get('date') || '', 
+                workerId: formData.get('worker_id') || '', 
+                location: formData.get('location') || '', 
+                status: formData.get('status') || '', 
+                hoursWorked: parseFloat(formData.get('hours')) || 0, 
+                remarks: formData.get('remarks') || '', 
                 createdAt: serverTimestamp() 
             };
-            
             try {
                 await addDoc(attendanceCollection, newAttendance);
                 showAlert(successAlert, `Attendance recorded for worker successfully!`);
@@ -354,36 +481,29 @@
             }
         });
 
-        // 3. Wage Payments Form
+        // 3. Payments form submission logic
         paymentsForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            if (!paymentsCollection || !workersList.length) {
-                showAlert(errorAlert, "Database or worker data not ready.");
-                return;
-            }
-
+            if (!paymentsCollection || !workersList.length) { showAlert(errorAlert, "Database or worker data not ready."); return; }
             const formData = new FormData(paymentsForm);
-            
             const dailyRate = parseFloat(formData.get('daily_rate')) || 0;
             const daysWorked = parseFloat(formData.get('days_worked')) || 0;
             const deductions = parseFloat(formData.get('deductions')) || 0;
-            
             const grossPay = dailyRate * daysWorked;
             const netPay = grossPay - deductions;
-
+            
             const newPayment = {
-                paymentDate: formData.get('payment_date') || '',
-                workerId: formData.get('worker_id_payment') || '',
-                dailyRate: dailyRate,
-                daysWorked: daysWorked,
-                grossPay: grossPay,
-                deductions: deductions,
-                netPay: netPay,
-                paymentMethod: formData.get('payment_method') || '',
-                referenceNo: formData.get('reference_no') || '',
+                paymentDate: formData.get('payment_date') || '', 
+                workerId: formData.get('worker_id_payment') || '', 
+                dailyRate: dailyRate, 
+                daysWorked: daysWorked, 
+                grossPay: grossPay, 
+                deductions: deductions, 
+                netPay: netPay, 
+                paymentMethod: formData.get('payment_method') || '', 
+                referenceNo: formData.get('reference_no') || '', 
                 createdAt: serverTimestamp() 
             };
-            
             try {
                 await addDoc(paymentsCollection, newPayment);
                 showAlert(successAlert, `Payment recorded for worker: $${netPay.toFixed(2)}`);
@@ -394,15 +514,24 @@
             }
         });
 
+
         window.onload = initFirebase;
     </script>
 </head>
 <body class="p-4 sm:p-8">
     <div class="container mx-auto">
-        <header class="mb-6">
-            <h1 class="text-3xl font-extrabold text-teal-700">Collaborative Labour Management System</h1>
-            <p class="text-gray-600 mb-2">3-Sheet online workbook using real-time database.</p>
-            <div id="auth-status" class="text-sm text-gray-500">Connecting...</div>
+        <header class="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center">
+            <div>
+                <h1 class="text-3xl font-extrabold text-teal-700">Dhusamareb Road Package 1 Labour Management Record</h1>
+                <p class="text-gray-600 mb-2">3-Sheet online workbook using real-time database.</p>
+                <div id="auth-status" class="text-sm text-gray-500">Connecting...</div>
+            </div>
+            <button onclick="downloadAllData()" class="mt-4 sm:mt-0 px-4 py-2 bg-blue-600 text-white font-bold rounded-lg shadow-md hover:bg-blue-700 transition duration-150 flex items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5 mr-2">
+                    <path fill-rule="evenodd" d="M10 18a.75.75 0 0 1-.75-.75V4.659l-1.953 1.954a.75.75 0 0 1-1.06-1.06l3.25-3.25a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 1 1-1.06 1.06l-1.953-1.954V17.25c0 .414-.336.75-.75.75Z" clip-rule="evenodd" />
+                </svg>
+                Download All Data (.csv)
+            </button>
         </header>
 
         <!-- Alerts -->
@@ -427,12 +556,13 @@
             <!-- Add New Worker Form -->
             <div class="form-card p-6 rounded-xl mb-8 border border-gray-200">
                 <h2 class="text-xl font-semibold text-teal-600 mb-4">Add New Worker</h2>
-                <form id="register-form" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <form id="register-form" class="grid grid-cols-1 md:grid-cols-4 gap-4">
                     
-                    <!-- Row 1 -->
+                    <!-- Row 1: Added Worker No -->
+                    <input type="text" name="worker_no" placeholder="Worker No. (e.g., W-001)" required class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
                     <input type="text" name="name" placeholder="Full Name (Required)" required class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
-                    <input type="text" name="id" placeholder="National ID / Passport No." class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
                     <input type="text" name="trade" placeholder="Trade / Role (e.g., Carpenter)" required class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
+                    <input type="text" name="id" placeholder="National ID / Passport No." class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
                     
                     <!-- Row 2 -->
                     <input type="text" name="location" placeholder="Home Location / Village" class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
@@ -452,9 +582,9 @@
                         <option value="F">F</option>
                     </select>
                     
-                    <input type="text" name="remarks" placeholder="Remarks" class="p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
+                    <input type="text" name="remarks" placeholder="Remarks" class="md:col-span-2 p-2 border border-gray-300 rounded-lg focus:ring-teal-500 focus:border-teal-500">
                     
-                    <button type="submit" class="md:col-span-3 p-3 bg-teal-600 text-white font-bold rounded-lg hover:bg-teal-700 transition duration-150">
+                    <button type="submit" class="md:col-span-4 p-3 bg-teal-600 text-white font-bold rounded-lg hover:bg-teal-700 transition duration-150">
                         Add Worker to Register
                     </button>
                 </form>
@@ -467,7 +597,7 @@
                         <tr>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-center">No.</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker Full Name</th>
-                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker ID (Ref)</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker No.</th> <!-- Updated Header -->
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">National ID / Passport No.</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Home Location / Village</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Contact Phone</th>
@@ -529,7 +659,7 @@
                         <tr>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-center">No.</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Date</th>
-                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker ID (Ref)</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker No.</th> <!-- Updated Header -->
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker Name</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Location / Activity</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-center">Status</th>
@@ -585,7 +715,7 @@
                         <tr>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-center">No.</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Payment Date</th>
-                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker ID (Ref)</th>
+                            <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker No.</th> <!-- Updated Header -->
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Worker Name</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-left">Trade / Role</th>
                             <th class="p-4 text-xs font-medium text-gray-700 uppercase tracking-wider text-right">Daily Rate (USD)</th>
