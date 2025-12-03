@@ -20,7 +20,7 @@
         }
         .form-card {
             background-color: #ffffff;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 2px, 4px, 0.1);
         }
         .table-container {
             overflow-x: auto;
@@ -328,20 +328,36 @@
                     } else {
                         // Attempt sign in with custom token (Canvas environment) or anonymously (GitHub Pages)
                         authStatusElement.innerHTML = `⚠️ Authenticating...`;
-                        if (initialAuthToken) {
-                            // Canvas environment auth flow
-                            await signInWithCustomToken(auth, initialAuthToken);
-                        } else {
-                            // GitHub Pages / Manual hosting auth flow
-                            await signInAnonymously(auth);
+                        
+                        try {
+                            if (initialAuthToken) {
+                                // Canvas environment auth flow
+                                await signInWithCustomToken(auth, initialAuthToken);
+                            } else {
+                                // GitHub Pages / Manual hosting auth flow
+                                await signInAnonymously(auth);
+                            }
+                        } catch(authError) {
+                            // --- CRUCIAL ADDITION FOR DEBUGGING GITHUB PAGES ISSUE ---
+                            console.error("Authentication Attempt Failed:", authError);
+                            let errorMessage = `❌ Auth Failed. The API Key may be misconfigured or the "Anonymous" sign-in method may not be enabled in your Firebase console.`;
+                            
+                            if (authError.code) {
+                                errorMessage = `❌ Auth Error Code: ${authError.code}. Please ensure Firebase Anonymous Sign-in is enabled in your project's Authentication settings.`;
+                            }
+                            
+                            authStatusElement.innerHTML = `<span class="text-red-600">${errorMessage}</span>`;
+                            showAlert(errorAlert, errorMessage, 10000);
+                            setFormStatus(false); 
+                            // --------------------------------------------------------
                         }
                     }
                 });
 
             } catch (error) {
                 console.error("Firebase Initialization/Authentication Error:", error);
-                authStatusElement.textContent = `❌ Critical Error: ${error.message}. Check your Firebase config and Firestore rules.`;
-                showAlert(errorAlert, `Critical Error: ${error.message}. See console for details.`, 8000);
+                authStatusElement.textContent = `❌ Critical Initialization Error: ${error.message}. Check your Firebase config and Firestore rules.`;
+                showAlert(errorAlert, `Critical Initialization Error: ${error.message}. See console for details.`, 8000);
                 setFormStatus(false); // Keep forms disabled on critical error
             }
         }
